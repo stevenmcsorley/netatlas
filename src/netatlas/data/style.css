@@ -35,6 +35,20 @@ button.header-button:hover { color: #f4f7fb; background: #1b2837; }
   color: #8debdc; background: #142a2b; border: 1px solid #22504c;
   border-radius: 9px; padding: 5px 8px; font-size: 9px; font-weight: 800; letter-spacing: .6px;
 }
+.poll-label { color: #7d91a5; font-size: 8px; font-weight: 800; letter-spacing: .8px; }
+.compact-dropdown { min-width: 96px; min-height: 32px; border-radius: 9px; }
+.compact-dropdown button { color: #dce7f1; background: #131f2c; border: 1px solid #2a3b4d; border-radius: 9px; font-size: 10px; }
+.compact-dropdown button:hover { background: #1b2b3a; border-color: #4b697d; }
+.load-more { color: #b9ddda; background: #112522; border: 1px solid #235147; border-radius: 9px; font-size: 10px; font-weight: 700; }
+.load-more:hover { color: #e7fffa; background: #17342e; border-color: #3d8a73; }
+.detail-content { padding: 4px 2px; }
+.event-list { background: transparent; }
+.event-list row.event-row { background: #0d151f; border: 1px solid #1d2a37; border-radius: 9px; margin: 2px 0; }
+.event-open, .event-closed { border-radius: 6px; padding: 4px 6px; font-size: 8px; font-weight: 800; letter-spacing: .5px; }
+.event-open { color: #69e2c6; background: #14332e; }
+.event-closed { color: #b5a2c9; background: #282237; }
+.event-time { color: #8497aa; font-size: 9px; font-variant-numeric: tabular-nums; }
+.legend-note { color: #91a4b6; font-size: 8px; font-weight: 750; letter-spacing: .5px; }
 .muted-small { color: #8091a3; font-size: 9px; }
 .atlas-canvas { background: #080e16; border: 1px solid #21303d; border-radius: 14px; }
 .legend-process, .legend-public, .legend-local { font-size: 9px; font-weight: 650; }

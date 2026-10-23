@@ -10,6 +10,8 @@ from netatlas.procfs import Connection, Process, Snapshot
 
 
 def demo_snapshot():
+    global demo_calls
+    demo_calls += 1
     now = time.time()
     apps = [
         Process(4102, "Firefox", "/usr/lib/firefox/firefox", 1000, "10002"),
@@ -32,9 +34,28 @@ def demo_snapshot():
                    state, str(9000 + i), process)
         for i, (process, remote, state) in enumerate(samples)
     )
+    if demo_calls > 1:
+        # Demonstrate both session events in screenshots, without ever
+        # touching the host's real sockets or process data.
+        replacement = Connection(
+            "TCP", "192.168.1.22:41022", "203.0.113.18:443",
+            "ESTABLISHED", "9022", apps[1]
+        )
+        connections = connections[1:] + (replacement,)
     return Snapshot(now, connections, 1)
 
 
+demo_calls = 0
 app.DEMO_MODE = True
 app.read_snapshot = demo_snapshot
+render_event_feed = app.AtlasWindow._render_event_feed
+
+
+def show_demo_activity(window):
+    render_event_feed(window)
+    if window.activity.events:
+        window.inspector_stack.set_visible_child_name("activity")
+
+
+app.AtlasWindow._render_event_feed = show_demo_activity
 raise SystemExit(app.run())

@@ -4,9 +4,9 @@
 turns visible live sockets into a native, animated process-to-destination atlas,
 with a searchable connection list and a detail inspector.
 
-![Fullscreen NetAtlas with native window controls, compact stats, a selected purple route, and a synthetic-data warning](docs/screenshots/netatlas.png)
+![Fullscreen NetAtlas showing a selected route, searchable and sortable connections, and recent open and closed events from synthetic demo data](docs/screenshots/netatlas.png)
 
-NetAtlas reads Linux `/proc` data every ~1.8 seconds. It is read-only, works as
+NetAtlas reads Linux `/proc` data every 5 seconds by default. It is read-only, works as
 your regular user, and has no daemon, account, telemetry, or remote lookups.
 
 ## Install on Ubuntu
@@ -29,14 +29,17 @@ Drag the split handles to give the atlas or connection inspector more room.
 The layout follows window resizing, and the atlas takes the extra vertical
 space when maximized.
 
-Click a connection to highlight its route and details in violet. Dashed wires,
-arrowheads and moving pulses default to app → remote endpoint. They visualize
-the socket association only; `/proc` does not reveal packet direction or
-volume. Busy views group sockets by app and destination, cap the map to the most
-active nodes/routes, and show up to 180 searchable connection groups at once.
+Click a connection to highlight its route and details in violet. The map is a
+socket-association view, not a traffic monitor: its animated paths do not
+measure packet direction, bandwidth, or volume. Choose a 2, 5, or 10 second
+scan interval; 5 seconds is the default to reduce background work. The first
+sample establishes a baseline, then the Activity tab records newly observed
+and closed sockets for this session. Short-lived connections between scans
+can still be missed. Sort connection groups by socket count, most recently
+changed, or app name; use **Load more** on busy systems.
 
 Build an Ubuntu `.deb` with `./packaging/build-deb.sh`; install it with
-`sudo apt install ./dist/netatlas_0.2.0_all.deb` and remove it with
+`sudo apt install ./dist/netatlas_0.3.0_all.deb` and remove it with
 `sudo apt remove netatlas`. For a user install, run `./uninstall.sh` from the
 source checkout. NetAtlas installs no system service or security rules.
 
@@ -45,8 +48,12 @@ source checkout. NetAtlas installs no system service or security rules.
 - A line represents a socket currently visible in `/proc/net/tcp*` or
   `/proc/net/udp*`; it is not a measure of bytes or traffic volume.
 - App ownership is matched through `/proc/PID/fd` socket inodes. Restricted
-  processes may appear as unattributed; use a root monitor only if you
-  independently decide broader visibility is needed.
+  processes may appear as unattributed because of `/proc` restrictions,
+  process races, or kernel-owned sockets. This is a best-effort count, not a
+  definitive count of hidden applications. NetAtlas never elevates privileges.
+- NetAtlas lists TCP and connected UDP sockets with remote endpoints. It does
+  not show listening sockets, Unix-domain sockets, or UDP sockets without a
+  connected remote endpoint.
 - The map shows local processes and literal IP endpoints. It does not infer
   physical locations, resolve domain names, inspect packet contents, or use
   threat-intelligence services.
@@ -66,7 +73,7 @@ visual awareness tool, not an antivirus, firewall, or intrusion detector.
 
 All monitoring stays local. NetAtlas does not open packet payloads, persist a
 connection history, geolocate addresses, or send telemetry. The in-memory
-“new in the last minute” count resets when the app closes.
+activity feed and “new in the last minute” count reset when the app closes.
 
 ## Development
 
@@ -80,7 +87,9 @@ PYTHONPATH=src /usr/bin/python3 -m unittest discover -s tests -v
 The dashboard is GTK4/Libadwaita with a Cairo-drawn atlas. The monitor reads
 `/proc/net` and resolves socket inode ownership in `/proc/PID/fd` off the UI
 thread. Process start times are checked around descriptor inspection to avoid
-attributing a connection to a reused PID.
+attributing a connection to a reused PID. Scan cost depends on the number of
+processes and open file descriptors on the host; use a longer interval or
+Pause to reduce polling overhead.
 
 ## Screenshots
 

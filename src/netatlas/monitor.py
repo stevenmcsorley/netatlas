@@ -16,14 +16,20 @@ class Activity:
     def __init__(self, max_events: int = 300):
         self.connections: dict[tuple, Connection] = {}
         self.events: deque[Event] = deque(maxlen=max_events)
+        self.initialized = False
 
     def update(self, snapshot: Snapshot) -> list[Event]:
-        current = {connection.key: connection for connection in snapshot.connections}
+        current = {connection.socket_key: connection for connection in snapshot.connections}
+        if not self.initialized:
+            self.connections = current
+            self.initialized = True
+            return []
         added = [Event(snapshot.timestamp, "opened", connection)
                  for key, connection in current.items() if key not in self.connections]
         removed = [Event(snapshot.timestamp, "closed", connection)
                    for key, connection in self.connections.items() if key not in current]
-        for event in added:
+        changed = added + removed
+        for event in changed:
             self.events.append(event)
         self.connections = current
-        return added
+        return changed

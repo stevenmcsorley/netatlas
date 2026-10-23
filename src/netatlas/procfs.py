@@ -44,6 +44,11 @@ class Connection:
                 proc.name if proc else "?", proc.pid if proc else None,
                 proc.starttime if proc else "")
 
+    @property
+    def socket_key(self) -> tuple[str, str, str, str]:
+        """Stable socket identity independent of best-effort process attribution."""
+        return self.protocol, self.local, self.remote, self.inode
+
 
 @dataclass(frozen=True)
 class Snapshot:

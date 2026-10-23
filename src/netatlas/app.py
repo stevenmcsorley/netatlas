@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 from collections import Counter
+from datetime import datetime
 import ipaddress
 import math
 from pathlib import Path
 import threading
+import time
 
 import gi
 gi.require_version("Gtk", "4.0")
@@ -18,7 +20,7 @@ from .procfs import Connection, Snapshot, read_snapshot
 
 
 APP_ID = "io.github.stevenmcsorley.NetAtlas"
-REFRESH_MS = 1800
+REFRESH_MS = 5000
 HISTORY_SECONDS = 60
 MAX_LIST_ROWS = 180
 MAX_MAP_EDGES = 160
@@ -58,11 +60,14 @@ class AtlasWindow(Adw.ApplicationWindow):
         self.rebuilding_list = False
         self.animation_phase = 0.0
         self.selected_group_count = 1
+        self.list_limit = MAX_LIST_ROWS
+        self.sort_mode = "Most sockets"
+        self.refresh_ms = REFRESH_MS
         self._build_ui()
         self.maximize()
         self._start_poll()
-        GLib.timeout_add(REFRESH_MS, self._tick)
-        GLib.timeout_add(55, self._animate)
+        self.poll_source = GLib.timeout_add(self.refresh_ms, self._tick)
+        GLib.timeout_add(90, self._animate)
 
     def _build_ui(self):
         root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
@@ -149,6 +154,12 @@ class AtlasWindow(Adw.ApplicationWindow):
             value.set_halign(Gtk.Align.END)
             card.append(value)
             self.metric_labels[key] = value
+        self.metric_labels["new"].set_tooltip_text(
+            "New socket connections first observed in the last minute. A connection can begin and end between scans."
+        )
+        self.metric_labels["connections"].set_tooltip_text(
+            "Visible TCP sockets and connected UDP sockets reported by this network namespace. Listeners and Unix sockets are not shown."
+        )
 
     def _build_map(self):
         panel = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
@@ -159,10 +170,24 @@ class AtlasWindow(Adw.ApplicationWindow):
         top = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         panel.append(top)
         top.append(_label("CONNECTION ATLAS", "section-title"))
-        top.append(_label("APP  →  DESTINATION", "map-legend"))
+        map_legend = _label("PROCESS  ↔  ENDPOINT", "map-legend")
+        map_legend.set_tooltip_text(
+            "This is a live socket map, not a traffic monitor. The animated path is illustrative; packet direction and volume are not measured."
+        )
+        top.append(map_legend)
+        top.append(_label("POLL", "poll-label"))
+        self.refresh_dropdown = Gtk.DropDown.new_from_strings(["2 sec", "5 sec", "10 sec"])
+        self.refresh_dropdown.set_selected(1)
+        self.refresh_dropdown.add_css_class("compact-dropdown")
+        self.refresh_dropdown.set_tooltip_text("Choose how often NetAtlas scans process sockets. Longer intervals use less background work.")
+        self.refresh_dropdown.connect("notify::selected", self._on_refresh_interval)
+        top.append(self.refresh_dropdown)
         self.map_hint = _label("Waiting for first snapshot…", "muted-small")
         self.map_hint.set_hexpand(True)
         self.map_hint.set_halign(Gtk.Align.END)
+        self.map_hint.set_tooltip_text(
+            "Owner matching is best-effort. Restricted /proc access, process races, and kernel-owned sockets can leave an endpoint unattributed."
+        )
         top.append(self.map_hint)
         self.canvas = Gtk.DrawingArea()
         self.canvas.set_content_width(900)
@@ -177,7 +202,7 @@ class AtlasWindow(Adw.ApplicationWindow):
         legend.append(_label("●  App process", "legend-process"))
         legend.append(_label("●  Public endpoint", "legend-public"))
         legend.append(_label("●  Local / reserved", "legend-local"))
-        legend.append(_label("Animated route is illustrative — packet direction and volume aren’t measured", "muted-small"))
+        legend.append(_label("SOCKET ASSOCIATION ONLY  ·  NO PACKET / BANDWIDTH MEASUREMENT", "legend-note"))
         return panel
 
     def _build_activity(self):
@@ -201,9 +226,17 @@ class AtlasWindow(Adw.ApplicationWindow):
         self.connection_count.set_hexpand(True)
         self.connection_count.set_halign(Gtk.Align.END)
         title_row.append(self.connection_count)
+        controls = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        list_panel.append(controls)
         self.search = Gtk.SearchEntry(placeholder_text="Filter app, address, or protocol…")
+        self.search.set_hexpand(True)
         self.search.connect("search-changed", self._on_search)
-        list_panel.append(self.search)
+        controls.append(self.search)
+        self.sort_dropdown = Gtk.DropDown.new_from_strings(["Most sockets", "Recently changed", "App name"])
+        self.sort_dropdown.add_css_class("compact-dropdown")
+        self.sort_dropdown.set_tooltip_text("Sort the visible connection groups")
+        self.sort_dropdown.connect("notify::selected", self._on_sort_changed)
+        controls.append(self.sort_dropdown)
         self.flow_list = Gtk.ListBox(selection_mode=Gtk.SelectionMode.SINGLE)
         self.flow_list.add_css_class("flow-list")
         self.flow_list.connect("row-selected", self._on_row_selected)
@@ -211,18 +244,37 @@ class AtlasWindow(Adw.ApplicationWindow):
         self.flow_scroll.set_min_content_height(120)
         self.flow_scroll.set_child(self.flow_list)
         list_panel.append(self.flow_scroll)
+        self.load_more = Gtk.Button(label="Load more connections")
+        self.load_more.add_css_class("load-more")
+        self.load_more.connect("clicked", self._on_load_more)
+        self.load_more.set_visible(False)
+        list_panel.append(self.load_more)
         self.empty = _label("No active internet sockets visible yet. Start a browser or app that connects to the network.", "empty-state")
         self.empty.set_wrap(True)
         list_panel.append(self.empty)
 
-        self.detail_panel = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
-        self.detail_panel.add_css_class("connection-panel")
+        inspector = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        inspector.add_css_class("connection-panel")
+        inspector.set_hexpand(True)
+        inspector.set_vexpand(True)
+        inspector_header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        inspector.append(inspector_header)
+        inspector_header.append(_label("INSPECTOR", "section-title"))
+        self.inspector_stack = Gtk.Stack(transition_type=Gtk.StackTransitionType.CROSSFADE,
+                                         transition_duration=160, vexpand=True)
+        self.inspector_stack.set_hexpand(True)
+        switcher = Gtk.StackSwitcher(stack=self.inspector_stack)
+        switcher.set_halign(Gtk.Align.END)
+        switcher.set_hexpand(True)
+        inspector_header.append(switcher)
+        split.set_end_child(inspector)
         detail_scroll = Gtk.ScrolledWindow(vexpand=True, hscrollbar_policy=Gtk.PolicyType.NEVER)
         detail_scroll.set_min_content_width(290)
         detail_scroll.set_min_content_height(180)
+        self.detail_panel = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        self.detail_panel.add_css_class("detail-content")
         detail_scroll.set_child(self.detail_panel)
-        split.set_end_child(detail_scroll)
-        self.detail_panel.append(_label("CONNECTION DETAILS", "section-title"))
+        self.inspector_stack.add_titled(detail_scroll, "details", "Details")
         self.detail_name = _label("Choose a connection", "detail-title")
         self.detail_name.set_wrap(True)
         self.detail_panel.append(self.detail_name)
@@ -233,7 +285,57 @@ class AtlasWindow(Adw.ApplicationWindow):
         self.detail_note = _label("The moving route shows app → endpoint association. It does not measure packet direction, contents, or volume.", "muted-small")
         self.detail_note.set_wrap(True)
         self.detail_panel.append(self.detail_note)
+        self._build_event_feed()
+        inspector.append(self.inspector_stack)
         return split
+
+    def _build_event_feed(self):
+        page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        page.append(_label("RECENT CHANGES", "section-title"))
+        page.append(_label("New and closed sockets observed during this session. Short-lived connections between scans may be missed.", "muted-small"))
+        self.event_empty = _label("No connection changes observed yet.", "empty-state")
+        self.event_empty.set_wrap(True)
+        page.append(self.event_empty)
+        self.event_list = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE)
+        self.event_list.add_css_class("event-list")
+        event_scroll = Gtk.ScrolledWindow(vexpand=True, hscrollbar_policy=Gtk.PolicyType.NEVER)
+        event_scroll.set_child(self.event_list)
+        page.append(event_scroll)
+        self.inspector_stack.add_titled(page, "activity", "Activity")
+        self.event_rows_signature = None
+
+    def _render_event_feed(self):
+        events = list(self.activity.events)[-40:]
+        signature = tuple((event.kind, event.at, event.connection.socket_key) for event in events)
+        if signature == self.event_rows_signature:
+            return
+        self.event_rows_signature = signature
+        while child := self.event_list.get_first_child():
+            self.event_list.remove(child)
+        self.event_empty.set_visible(not events)
+        for event in reversed(events):
+            connection = event.connection
+            process_name = connection.process.name if connection.process else "Unattributed"
+            opened = event.kind == "opened"
+            row = Gtk.ListBoxRow()
+            row.add_css_class("event-row")
+            line = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=9)
+            line.set_margin_top(7)
+            line.set_margin_bottom(7)
+            line.set_margin_start(8)
+            line.set_margin_end(8)
+            row.set_child(line)
+            badge = _label("OPEN" if opened else "CLOSED", "event-open" if opened else "event-closed")
+            line.append(badge)
+            text_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+            text_box.set_hexpand(True)
+            line.append(text_box)
+            text_box.append(_label(f"{process_name}  →  {connection.remote}", "flow-title"))
+            text_box.append(_label(f"{connection.protocol} · {connection.state}", "muted-small"))
+            clock = _label(datetime.fromtimestamp(event.at).strftime("%H:%M:%S"), "event-time")
+            clock.set_tooltip_text(datetime.fromtimestamp(event.at).astimezone().strftime("%Y-%m-%d %H:%M:%S %Z"))
+            line.append(clock)
+            self.event_list.append(row)
 
     def _build_footnote(self, parent):
         row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
@@ -263,6 +365,21 @@ class AtlasWindow(Adw.ApplicationWindow):
         else:
             self.unfullscreen()
 
+    def _on_refresh_interval(self, dropdown, _pspec):
+        self.refresh_ms = (2000, 5000, 10000)[dropdown.get_selected()]
+        if hasattr(self, "poll_source"):
+            GLib.source_remove(self.poll_source)
+            self.poll_source = GLib.timeout_add(self.refresh_ms, self._tick)
+
+    def _on_sort_changed(self, *_):
+        self.sort_mode = ("Most sockets", "Recently changed", "App name")[self.sort_dropdown.get_selected()]
+        self.list_limit = MAX_LIST_ROWS
+        self._refresh_list()
+
+    def _on_load_more(self, *_):
+        self.list_limit += MAX_LIST_ROWS
+        self._refresh_list()
+
     def _on_key_pressed(self, _controller, keyval, _keycode, _state):
         if keyval == Gdk.KEY_F11:
             self.fullscreen_button.set_active(not self.fullscreen_button.get_active())
@@ -273,7 +390,7 @@ class AtlasWindow(Adw.ApplicationWindow):
         return False
 
     def _animate(self):
-        if not self.paused:
+        if not self.paused and self.graph_connections and self.get_mapped():
             self.animation_phase = (self.animation_phase + 4.0) % 280.0
             self.canvas.queue_draw()
         return GLib.SOURCE_CONTINUE
@@ -468,13 +585,15 @@ class AtlasWindow(Adw.ApplicationWindow):
 
         def worker():
             try:
+                started = time.monotonic()
                 snapshot = read_snapshot()
-                GLib.idle_add(self._receive_snapshot, snapshot, None)
+                elapsed = time.monotonic() - started
+                GLib.idle_add(self._receive_snapshot, snapshot, None, elapsed)
             except Exception as exc:  # Keep the UI alive if procfs is restricted.
-                GLib.idle_add(self._receive_snapshot, None, str(exc))
+                GLib.idle_add(self._receive_snapshot, None, str(exc), 0.0)
         threading.Thread(target=worker, name="netatlas-procfs", daemon=True).start()
 
-    def _receive_snapshot(self, snapshot, error):
+    def _receive_snapshot(self, snapshot, error, elapsed=0.0):
         self.busy = False
         if error:
             self.live_pill.set_text("  MONITOR ERROR  ")
@@ -483,9 +602,13 @@ class AtlasWindow(Adw.ApplicationWindow):
         self.snapshot = snapshot
         cutoff = snapshot.timestamp - HISTORY_SECONDS
         self.activity.update(snapshot)
-        recent_events = sum(event.at >= cutoff for event in self.activity.events)
+        recent_events = sum(event.kind == "opened" and event.at >= cutoff
+                            for event in self.activity.events)
         self.live_pill.set_text("  DEMO DATA · SYNTHETIC  " if DEMO_MODE else "  LIVE · PROCFS  ")
-        self.map_hint.set_text(f"Updated just now · {snapshot.hidden_process_count} process owner(s) unavailable")
+        self.map_hint.set_text(f"Updated just now · scan {elapsed:.2f}s · {snapshot.hidden_process_count} unattributed")
+        self.map_hint.set_tooltip_text(
+            f"Best-effort process ownership. Some sockets can be unattributed because of /proc restrictions, races, or kernel ownership. Last scan: {elapsed:.2f} seconds."
+        )
         connections = tuple(self.activity.connections.values())
         self.graph_connections = connections
         self.graph_model = self._aggregate_graph(connections)
@@ -498,6 +621,7 @@ class AtlasWindow(Adw.ApplicationWindow):
         if signature != self.list_signature:
             self.list_signature = signature
             self._refresh_list()
+        self._render_event_feed()
         self.canvas.queue_draw()
         return GLib.SOURCE_REMOVE
 
@@ -516,6 +640,7 @@ class AtlasWindow(Adw.ApplicationWindow):
 
     def _on_search(self, entry):
         self.search_text = entry.get_text().casefold().strip()
+        self.list_limit = MAX_LIST_ROWS
         self._refresh_list()
 
     def _refresh_list(self):
@@ -538,13 +663,23 @@ class AtlasWindow(Adw.ApplicationWindow):
                     + " " + " ".join(c.local for c in group)
                 ).casefold()
             }
-        group_rows = sorted(groups.items(), key=lambda item: (
-            item[0][0][1].casefold(), item[0][1], item[0][2], item[0][3]
-        ))
+        last_changed = {}
+        for event in self.activity.events:
+            last_changed[event.connection.socket_key] = event.at
+        def sort_key(item):
+            key, group = item
+            changed = max((last_changed.get(connection.socket_key, 0) for connection in group), default=0)
+            stable = (key[0][1].casefold(), key[1], key[2], key[3])
+            if self.sort_mode == "Recently changed":
+                return (-changed, -len(group), *stable)
+            if self.sort_mode == "App name":
+                return stable
+            return (-len(group), -changed, *stable)
+        group_rows = sorted(groups.items(), key=sort_key)
         total_matches = sum(len(group) for group in groups.values())
         shown = 0
         selected_row = None
-        for (pkey, remote, protocol, state), group in group_rows[:MAX_LIST_ROWS]:
+        for (pkey, remote, protocol, state), group in group_rows[:self.list_limit]:
             connection = group[0]
             process = connection.process
             proc_name = pkey[1]
@@ -581,9 +716,12 @@ class AtlasWindow(Adw.ApplicationWindow):
         )
         if selected_row is None and DEMO_MODE and self.flow_list.get_row_at_index(0):
             selected_row = self.flow_list.get_row_at_index(0)
-        if total_matches > MAX_LIST_ROWS:
+        more = max(0, len(group_rows) - shown)
+        self.load_more.set_visible(more > 0)
+        self.load_more.set_label(f"Load next {min(more, MAX_LIST_ROWS)} groups · {more:,} remaining")
+        if len(group_rows) > shown:
             self.connection_count.set_text(
-                f"Showing {MAX_LIST_ROWS} groups · {total_matches:,} sockets · refine with search"
+                f"Showing {shown:,} of {len(group_rows):,} groups · {total_matches:,} sockets"
             )
         elif self.search_text:
             self.connection_count.set_text(f"{len(groups):,} groups · {total_matches:,} sockets")
