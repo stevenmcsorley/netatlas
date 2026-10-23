@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=NetAtlas
+Comment=Explore live network connections by app and destination
+Exec=netatlas-gui
+TryExec=netatlas-gui
+Icon=io.github.stevenmcsorley.NetAtlas
+Terminal=false
+Categories=Network;
+Keywords=network;security;connections;monitor;process;privacy;
+StartupNotify=true

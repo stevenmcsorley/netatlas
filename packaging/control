@@ -1,0 +1,9 @@
+Package: netatlas
+Version: 0.1.0
+Section: net
+Priority: optional
+Architecture: all
+Maintainer: Steven McSorley <smcsorl@gmail.com>
+Depends: python3 (>= 3.10), python3-gi, gir1.2-gtk-4.0, gir1.2-adw-1 (>= 1.5)
+Description: Visualize live Linux network connections
+ Native desktop atlas showing visible process-to-endpoint sockets from procfs.
