@@ -4,7 +4,7 @@
 turns visible live sockets into a native, animated process-to-destination atlas,
 with a searchable connection list and a detail inspector.
 
-![NetAtlas screenshot with its synthetic-data warning, readable process labels, and sample network endpoints](docs/screenshots/netatlas.png)
+![Fullscreen NetAtlas with native window controls, compact stats, a selected purple route, and a synthetic-data warning](docs/screenshots/netatlas.png)
 
 NetAtlas reads Linux `/proc` data every ~1.8 seconds. It is read-only, works as
 your regular user, and has no daemon, account, telemetry, or remote lookups.
@@ -22,8 +22,21 @@ cd netatlas
 Launch **NetAtlas** from Applications, or run `~/.local/bin/netatlas-gui`.
 The source launcher is `./bin/netatlas-gui`.
 
+NetAtlas opens maximized and keeps the normal Linux titlebar controls for
+moving, minimizing, restoring and closing the window. Use the fullscreen
+toolbar button or **F11** to enter/leave fullscreen; **Esc** exits fullscreen.
+Drag the split handles to give the atlas or connection inspector more room.
+The layout follows window resizing, and the atlas takes the extra vertical
+space when maximized.
+
+Click a connection to highlight its route and details in violet. Dashed wires,
+arrowheads and moving pulses default to app → remote endpoint. They visualize
+the socket association only; `/proc` does not reveal packet direction or
+volume. Busy views group sockets by app and destination, cap the map to the most
+active nodes/routes, and show up to 180 searchable connection groups at once.
+
 Build an Ubuntu `.deb` with `./packaging/build-deb.sh`; install it with
-`sudo apt install ./dist/netatlas_0.1.0_all.deb` and remove it with
+`sudo apt install ./dist/netatlas_0.2.0_all.deb` and remove it with
 `sudo apt remove netatlas`. For a user install, run `./uninstall.sh` from the
 source checkout. NetAtlas installs no system service or security rules.
 
@@ -42,6 +55,8 @@ source checkout. NetAtlas installs no system service or security rules.
   an alert.
 - Current sockets are sampled periodically. Very short-lived connections can
   begin and end between samples and therefore may not appear.
+- The animated arrow is a visual convention for app → remote endpoint. It is
+  not evidence of packet transmission in that direction.
 
 Those limits are deliberate: the first version does not need root, packet
 capture, kernel modules, firewall changes, or a background daemon. It is a
